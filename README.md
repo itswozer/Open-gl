@@ -4,7 +4,7 @@ Tarayıcıda çalışan, harici grafik kütüphanesi kullanmayan progresif path 
 
 ## Çalıştırma
 
-`genetik-algoritma.html` dosyasını güncel bir tarayıcıda açın. Önerilen tarayıcı WebGL 2 desteklemelidir. GPU hızlandırma kullanılamazsa CPU yedek motoru daha yavaş çalışabilir.
+`index.html` dosyasını güncel bir tarayıcıda açın veya GitHub Pages ile yayımlanan siteyi kullanın. Önerilen tarayıcı WebGL 2 desteklemelidir. GPU hızlandırma kullanılamazsa CPU yedek motoru daha yavaş çalışabilir.
 
 ## Kontroller
 
@@ -23,3 +23,7 @@ Kamera, nesne veya çözünürlük değiştiğinde progresif örnek birikimi sı
 - CPU yedek motorunda küre kesişimleri için BVH
 - Diffüz ve ayna yüzeyler, emissive alan ışığı, Monte Carlo örnekleme
 - Tek HTML uygulaması; harici runtime kütüphanesi yok
+
+## Canlı site
+
+https://itswozer.github.io/Open-gl/
