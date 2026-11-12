@@ -1,0 +1,1686 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Saf JavaScript Path Tracer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #090d17;
+      color: #e8eefc;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 26px 16px;
+      background: radial-gradient(ellipse at 50% 0, #182544 0, transparent 62%), #090d17;
+    }
+
+    main { width: min(100%, 1000px); margin: 0 auto; }
+    h1 { margin: 0; font-size: clamp(1.4rem, 3vw, 2rem); }
+    .subtitle { color: #a4b2ce; margin: 7px 0 18px; }
+
+    .panel {
+      background: #111a2b;
+      border: 1px solid #293754;
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 16px 42px #0005;
+    }
+
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .stat {
+      flex: 1 1 120px;
+      padding: 9px 12px;
+      border-radius: 9px;
+      background: #19253b;
+      color: #9eaccb;
+      font-size: .82rem;
+    }
+
+    .stat strong {
+      display: block;
+      margin-top: 2px;
+      color: #eef4ff;
+      font-size: 1.05rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .render-wrap {
+      overflow: hidden;
+      border: 1px solid #344360;
+      border-radius: 9px;
+      background: #05070c;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    canvas[hidden] { display: none; }
+    canvas:active { cursor: grabbing; }
+    .interaction-status { margin: 9px 2px 0; color: #a9bad6; font-size: .82rem; }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 16px;
+      margin-top: 13px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 9px 14px;
+      background: #7de8c4;
+      color: #09241c;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.secondary { background: #283753; color: #edf3ff; }
+    button:hover { filter: brightness(1.08); }
+    label { color: #b6c3db; font-size: .86rem; }
+    input { accent-color: #7de8c4; vertical-align: middle; }
+    select {
+      margin-left: 5px;
+      border: 1px solid #40516f;
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: #19253b;
+      color: #eef4ff;
+      font: inherit;
+    }
+    .hint { margin: 13px 0 0; color: #8998b5; font-size: .82rem; line-height: 1.55; }
+
+    @media (max-width: 560px) {
+      body { padding: 18px 9px; }
+      .panel { padding: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Saf JavaScript Path Tracer</h1>
+    <p class="subtitle">WebGL 2 GPU path tracing · Monte Carlo ile progresif global illumination</p>
+
+    <section class="panel" aria-label="Path tracing render paneli">
+      <div class="stats" aria-live="polite">
+        <div class="stat">Örnek / piksel<strong id="samples">0</strong></div>
+        <div class="stat">Çözünürlük<strong id="resolution">1920 × 1080</strong></div>
+        <div class="stat">Sahne geometrisi<strong id="scene-object-count">0</strong></div>
+        <div class="stat">Motor<strong id="worker-count">Hazırlanıyor</strong></div>
+        <div class="stat">Render durumu<strong id="render-status">Başlatılıyor</strong></div>
+      </div>
+
+      <div class="render-wrap">
+        <canvas id="render" width="1920" height="1080" aria-label="Progresif path tracing görüntüsü"></canvas>
+        <canvas id="fallback-render" width="1920" height="1080" aria-label="Yedek CPU path tracing görüntüsü" hidden></canvas>
+      </div>
+
+      <div class="controls">
+        <button id="pause" type="button">Duraklat</button>
+        <button id="reset" class="secondary" type="button">Görüntüyü sıfırla</button>
+        <label>Çözünürlük
+          <select id="resolution-select">
+            <option value="960x540">960 × 540 — Önizleme</option>
+            <option value="1920x1080" selected>1920 × 1080 — Full HD</option>
+            <option value="2048x1080">2048 × 1080 — DCI 2K</option>
+            <option value="2560x1440">2560 × 1440 — QHD</option>
+          </select>
+        </label>
+        <label>GPU örneklemesi
+          <input id="quality" type="range" min="1" max="4" value="1">
+          <span id="quality-value">1</span>
+        </label>
+      </div>
+      <p id="interaction-status" class="interaction-status" aria-live="polite">Seçili nesne: yok</p>
+      <p class="hint">Kamerayı W/A/S/D ile hareket ettirin. Boş alanda fareyi sürükleyerek etrafa bakın; küreleri seçip sürükleyerek taşıyın. Kamera veya nesne hareketinde örnek birikimi sıfırlanır. DCI 2K/QHD çözünürlükler daha fazla işlem gücü ve bellek kullanır; GPU bağlamı kaybolursa CPU Worker yedeği devreye girer.</p>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+
+    let WIDTH = 1920;
+    let HEIGHT = 1080;
+    const MAX_DEPTH = 5;
+    const EPSILON = 0.0008;
+    let SAMPLES_PER_PIXEL = WIDTH * HEIGHT;
+    const LIGHT_POWER = 24;
+
+    class Vec3 {
+      constructor(x = 0, y = 0, z = 0) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+      }
+
+      add(v) { return new Vec3(this.x + v.x, this.y + v.y, this.z + v.z); }
+      sub(v) { return new Vec3(this.x - v.x, this.y - v.y, this.z - v.z); }
+      mul(s) { return new Vec3(this.x * s, this.y * s, this.z * s); }
+      hadamard(v) { return new Vec3(this.x * v.x, this.y * v.y, this.z * v.z); }
+      dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z; }
+      cross(v) {
+        return new Vec3(
+          this.y * v.z - this.z * v.y,
+          this.z * v.x - this.x * v.z,
+          this.x * v.y - this.y * v.x
+        );
+      }
+      length() { return Math.sqrt(this.dot(this)); }
+      normalized() { return this.mul(1 / (this.length() || 1)); }
+      negate() { return this.mul(-1); }
+    }
+
+    class Ray {
+      constructor(origin, direction) {
+        this.origin = origin;
+        this.direction = direction.normalized();
+      }
+
+      at(t) { return this.origin.add(this.direction.mul(t)); }
+    }
+
+    class Material {
+      constructor(color, type = "diffuse", emission = 0) {
+        this.color = color;
+        this.type = type;
+        this.emission = emission;
+      }
+    }
+
+    class Sphere {
+      constructor(center, radius, material, name = "Küre") {
+        this.center = center;
+        this.radius = radius;
+        this.material = material;
+        this.name = name;
+      }
+
+      intersect(ray) {
+        const offset = ray.origin.sub(this.center);
+        const halfB = offset.dot(ray.direction);
+        const c = offset.dot(offset) - this.radius * this.radius;
+        const discriminant = halfB * halfB - c;
+        if (discriminant < 0) return null;
+
+        const root = Math.sqrt(discriminant);
+        let t = -halfB - root;
+        if (t <= EPSILON) t = -halfB + root;
+        if (t <= EPSILON) return null;
+
+        const point = ray.at(t);
+        return {
+          t,
+          point,
+          normal: point.sub(this.center).mul(1 / this.radius).normalized(),
+          material: this.material,
+          object: this
+        };
+      }
+    }
+
+    class Plane {
+      constructor(point, normal, material, options = {}) {
+        this.point = point;
+        this.normal = normal.normalized();
+        this.material = material;
+        this.uAxis = options.uAxis || new Vec3(1, 0, 0);
+        this.vAxis = options.vAxis || new Vec3(0, 0, 1);
+        this.minU = options.minU ?? -Infinity;
+        this.maxU = options.maxU ?? Infinity;
+        this.minV = options.minV ?? -Infinity;
+        this.maxV = options.maxV ?? Infinity;
+      }
+
+      intersect(ray) {
+        const denominator = ray.direction.dot(this.normal);
+        if (Math.abs(denominator) < 1e-8) return null;
+
+        const t = this.point.sub(ray.origin).dot(this.normal) / denominator;
+        if (t <= EPSILON) return null;
+        const point = ray.at(t);
+        const offset = point.sub(this.point);
+        const u = offset.dot(this.uAxis);
+        const v = offset.dot(this.vAxis);
+        if (u < this.minU || u > this.maxU || v < this.minV || v > this.maxV) return null;
+
+        return { t, point, normal: this.normal, material: this.material, object: this };
+      }
+    }
+
+    const white = new Material(new Vec3(0.73, 0.73, 0.70));
+    const red = new Material(new Vec3(0.72, 0.12, 0.10));
+    const blue = new Material(new Vec3(0.12, 0.24, 0.72));
+    const diffuseGold = new Material(new Vec3(0.78, 0.58, 0.20));
+    const mirror = new Material(new Vec3(0.92, 0.94, 0.98), "specular");
+    const lightMaterial = new Material(new Vec3(1, 1, 1), "emissive", LIGHT_POWER);
+    const decorMaterials = [
+      new Material(new Vec3(0.18, 0.66, 0.62)),
+      new Material(new Vec3(0.84, 0.28, 0.16)),
+      new Material(new Vec3(0.34, 0.48, 0.86)),
+      new Material(new Vec3(0.78, 0.72, 0.52)),
+      new Material(new Vec3(0.62, 0.30, 0.72))
+    ];
+
+    const objects = [
+      new Plane(new Vec3(0, 0, 0), new Vec3(0, 1, 0), white,
+        { uAxis: new Vec3(1, 0, 0), vAxis: new Vec3(0, 0, 1), minU: 0, maxU: 5, minV: 0, maxV: 6 }),
+      new Plane(new Vec3(0, 5, 0), new Vec3(0, -1, 0), white,
+        { uAxis: new Vec3(1, 0, 0), vAxis: new Vec3(0, 0, 1), minU: 0, maxU: 5, minV: 0, maxV: 6 }),
+      new Plane(new Vec3(0, 0, 6), new Vec3(0, 0, -1), white,
+        { uAxis: new Vec3(1, 0, 0), vAxis: new Vec3(0, 1, 0), minU: 0, maxU: 5, minV: 0, maxV: 5 }),
+      new Plane(new Vec3(0, 0, 0), new Vec3(1, 0, 0), red,
+        { uAxis: new Vec3(0, 0, 1), vAxis: new Vec3(0, 1, 0), minU: 0, maxU: 6, minV: 0, maxV: 5 }),
+      new Plane(new Vec3(5, 0, 0), new Vec3(-1, 0, 0), blue,
+        { uAxis: new Vec3(0, 0, 1), vAxis: new Vec3(0, 1, 0), minU: 0, maxU: 6, minV: 0, maxV: 5 }),
+      new Sphere(new Vec3(1.55, 1.05, 3.35), 1.03, diffuseGold, "Altın küre"),
+      new Sphere(new Vec3(3.55, 1.18, 4.40), 1.18, mirror, "Ayna küre"),
+      new Sphere(new Vec3(0.58, 0.23, 0.72), 0.23, decorMaterials[0], "Turkuaz küre"),
+      new Sphere(new Vec3(1.18, 0.24, 0.72), 0.24, decorMaterials[1], "Mercan küre"),
+      new Sphere(new Vec3(2.42, 0.22, 0.68), 0.22, decorMaterials[2], "Mavi küre"),
+      new Sphere(new Vec3(4.35, 0.25, 0.72), 0.25, decorMaterials[3], "Krem küre"),
+      new Sphere(new Vec3(0.62, 0.21, 1.48), 0.21, decorMaterials[4], "Mor küre"),
+      new Sphere(new Vec3(2.55, 0.24, 1.52), 0.24, decorMaterials[0], "Turkuaz küre 2"),
+      new Sphere(new Vec3(4.38, 0.22, 1.55), 0.22, decorMaterials[1], "Mercan küre 2"),
+      new Sphere(new Vec3(0.62, 0.25, 2.22), 0.25, decorMaterials[2], "Mavi küre 2"),
+      new Sphere(new Vec3(2.52, 0.21, 2.18), 0.21, decorMaterials[3], "Krem küre 2"),
+      new Sphere(new Vec3(4.38, 0.24, 2.30), 0.24, decorMaterials[4], "Mor küre 2"),
+      new Sphere(new Vec3(0.62, 0.22, 4.72), 0.22, decorMaterials[0], "Turkuaz küre 3"),
+      new Sphere(new Vec3(2.50, 0.24, 5.38), 0.24, decorMaterials[1], "Mercan küre 3"),
+      new Sphere(new Vec3(4.40, 0.22, 5.35), 0.22, decorMaterials[2], "Mavi küre 3"),
+      new Sphere(new Vec3(2.5, 4.48, 3.0), 0.48, lightMaterial, "Işık küresi")
+    ];
+
+    const light = objects[objects.length - 1];
+    let cameraOrigin = new Vec3(2.5, 2.45, -5.7);
+    const cameraTarget = new Vec3(2.5, 2.35, 2.8);
+    const worldUp = new Vec3(0, 1, 0);
+    const initialForward = cameraTarget.sub(cameraOrigin).normalized();
+    let cameraYaw = Math.atan2(initialForward.x, initialForward.z);
+    let cameraPitch = Math.asin(initialForward.y);
+    let cameraForward;
+    let cameraRight;
+    let cameraUp;
+    let aspectRatio = WIDTH / HEIGHT;
+    const fieldOfViewScale = Math.tan((42 * Math.PI / 180) / 2);
+
+    const gpuCanvas = document.getElementById("render");
+    const fallbackCanvas = document.getElementById("fallback-render");
+    let canvas = gpuCanvas;
+    gpuCanvas.width = fallbackCanvas.width = WIDTH;
+    gpuCanvas.height = fallbackCanvas.height = HEIGHT;
+    let gl = gpuCanvas.getContext("webgl2", {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      preserveDrawingBuffer: false
+    });
+    const context = fallbackCanvas.getContext("2d", { alpha: false });
+    if (gl) {
+      fallbackCanvas.width = 1;
+      fallbackCanvas.height = 1;
+    }
+    let image = null;
+    let accumulated = null;
+    let pixelSamples = null;
+    const sampleLabel = document.getElementById("samples");
+    const pauseButton = document.getElementById("pause");
+    const qualityInput = document.getElementById("quality");
+    const qualityLabel = document.getElementById("quality-value");
+    const resolutionSelect = document.getElementById("resolution-select");
+    const resolutionLabel = document.getElementById("resolution");
+    const interactionStatus = document.getElementById("interaction-status");
+    const workerCountLabel = document.getElementById("worker-count");
+    const renderStatusLabel = document.getElementById("render-status");
+    document.getElementById("scene-object-count").textContent = String(objects.length);
+    let completedSamples = 0;
+    let paused = false;
+    let previousFrameTime = 0;
+    const pressedKeys = new Set();
+    const CAMERA_SPEED = 3;
+    const LOOK_SENSITIVITY = 0.006;
+    let selectedObject = null;
+    let pointerAction = null;
+    let workers = [];
+    let renderGeneration = 0;
+    let readyWorkers = 0;
+    let nextJobStart = 0;
+    let jobsRemaining = 0;
+    let activeChunkSize = 288;
+    let refreshTimer = 0;
+    let rendererMode = gl ? "webgl" : "workers";
+    let gpuProgram = null;
+    let displayProgram = null;
+    let gpuTargets = [];
+    let gpuReadIndex = 0;
+    let gpuFloatTargets = false;
+    let gpuVao = null;
+    let gpuUniforms = null;
+    let gpuSceneDirty = true;
+    const gpuSpheres = objects.filter(object => object instanceof Sphere);
+    const MAX_GPU_SPHERES = 16;
+    const gpuSphereGeometry = new Float32Array(MAX_GPU_SPHERES * 4);
+    const gpuSphereSurface = new Float32Array(MAX_GPU_SPHERES * 4);
+    const gpuSphereEmission = new Float32Array(MAX_GPU_SPHERES * 4);
+
+    function updateCameraBasis() {
+      const cosPitch = Math.cos(cameraPitch);
+      cameraForward = new Vec3(
+        Math.sin(cameraYaw) * cosPitch,
+        Math.sin(cameraPitch),
+        Math.cos(cameraYaw) * cosPitch
+      ).normalized();
+      cameraRight = worldUp.cross(cameraForward).normalized();
+      cameraUp = cameraForward.cross(cameraRight).normalized();
+    }
+
+    updateCameraBasis();
+
+    function allocateFallbackBuffers() {
+      image = context.createImageData(WIDTH, HEIGHT);
+      accumulated = new Float32Array(SAMPLES_PER_PIXEL * 3);
+      pixelSamples = new Uint32Array(SAMPLES_PER_PIXEL);
+    }
+
+    function intersectScene(ray) {
+      let closest = Infinity;
+      let result = null;
+      for (const object of objects) {
+        const hit = object.intersect(ray);
+        if (hit && hit.t < closest) {
+          closest = hit.t;
+          result = hit;
+        }
+      }
+      return result;
+    }
+
+    function createPathWorkerRuntime() {
+      "use strict";
+      const EPSILON = 0.0008;
+      let scene = [];
+      let planes = [];
+      let sphereBvh = null;
+      let lightSphere = null;
+      let renderState = null;
+
+      class V {
+        constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+        add(v) { return new V(this.x + v.x, this.y + v.y, this.z + v.z); }
+        sub(v) { return new V(this.x - v.x, this.y - v.y, this.z - v.z); }
+        mul(s) { return new V(this.x * s, this.y * s, this.z * s); }
+        hadamard(v) { return new V(this.x * v.x, this.y * v.y, this.z * v.z); }
+        dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z; }
+        cross(v) {
+          return new V(
+            this.y * v.z - this.z * v.y,
+            this.z * v.x - this.x * v.z,
+            this.x * v.y - this.y * v.x
+          );
+        }
+        length() { return Math.sqrt(this.dot(this)); }
+        normalized() { return this.mul(1 / (this.length() || 1)); }
+        negate() { return this.mul(-1); }
+      }
+
+      function vector(data) { return new V(data.x, data.y, data.z); }
+
+      class Ray {
+        constructor(origin, direction) {
+          this.origin = origin;
+          this.direction = direction.normalized();
+        }
+        at(t) { return this.origin.add(this.direction.mul(t)); }
+      }
+
+      function intersectObject(ray, object) {
+        if (object.kind === "sphere") {
+          const offset = ray.origin.sub(object.center);
+          const halfB = offset.dot(ray.direction);
+          const discriminant = halfB * halfB - offset.dot(offset) + object.radius * object.radius;
+          if (discriminant < 0) return null;
+          const root = Math.sqrt(discriminant);
+          let t = -halfB - root;
+          if (t <= EPSILON) t = -halfB + root;
+          if (t <= EPSILON) return null;
+          const point = ray.at(t);
+          return {
+            t,
+            point,
+            normal: point.sub(object.center).mul(1 / object.radius).normalized(),
+            material: object.material
+          };
+        }
+
+        const denominator = ray.direction.dot(object.normal);
+        if (Math.abs(denominator) < 1e-8) return null;
+        const t = object.point.sub(ray.origin).dot(object.normal) / denominator;
+        if (t <= EPSILON) return null;
+        const point = ray.at(t);
+        const offset = point.sub(object.point);
+        const u = offset.dot(object.uAxis);
+        const v = offset.dot(object.vAxis);
+        if (u < object.minU || u > object.maxU || v < object.minV || v > object.maxV) return null;
+        return { t, point, normal: object.normal, material: object.material };
+      }
+
+      function buildSphereBvh(spheres) {
+        if (spheres.length === 0) return null;
+        const bounds = {
+          min: new V(Infinity, Infinity, Infinity),
+          max: new V(-Infinity, -Infinity, -Infinity)
+        };
+        for (const sphere of spheres) {
+          const radius = new V(sphere.radius, sphere.radius, sphere.radius);
+          const low = sphere.center.sub(radius);
+          const high = sphere.center.add(radius);
+          bounds.min = new V(
+            Math.min(bounds.min.x, low.x),
+            Math.min(bounds.min.y, low.y),
+            Math.min(bounds.min.z, low.z)
+          );
+          bounds.max = new V(
+            Math.max(bounds.max.x, high.x),
+            Math.max(bounds.max.y, high.y),
+            Math.max(bounds.max.z, high.z)
+          );
+        }
+        if (spheres.length <= 3) return { ...bounds, spheres };
+
+        const extent = bounds.max.sub(bounds.min);
+        const axis = extent.x >= extent.y && extent.x >= extent.z ? "x" :
+          extent.y >= extent.z ? "y" : "z";
+        const sorted = [...spheres].sort((a, b) => a.center[axis] - b.center[axis]);
+        const middle = Math.floor(sorted.length / 2);
+        return {
+          ...bounds,
+          left: buildSphereBvh(sorted.slice(0, middle)),
+          right: buildSphereBvh(sorted.slice(middle))
+        };
+      }
+
+      function intersectsBounds(ray, node, maxDistance) {
+        let near = EPSILON;
+        let far = maxDistance;
+        for (const axis of ["x", "y", "z"]) {
+          const direction = ray.direction[axis];
+          const origin = ray.origin[axis];
+          if (Math.abs(direction) < 1e-12) {
+            if (origin < node.min[axis] || origin > node.max[axis]) return false;
+            continue;
+          }
+          const inverse = 1 / direction;
+          let first = (node.min[axis] - origin) * inverse;
+          let second = (node.max[axis] - origin) * inverse;
+          if (first > second) [first, second] = [second, first];
+          near = Math.max(near, first);
+          far = Math.min(far, second);
+          if (far < near) return false;
+        }
+        return true;
+      }
+
+      function closestHit(ray) {
+        let closest = Infinity;
+        let result = null;
+        for (const object of planes) {
+          const hit = intersectObject(ray, object);
+          if (hit && hit.t < closest) {
+            closest = hit.t;
+            result = hit;
+          }
+        }
+
+        if (sphereBvh) {
+          const stack = [sphereBvh];
+          while (stack.length > 0) {
+            const node = stack.pop();
+            if (!intersectsBounds(ray, node, closest)) continue;
+            if (node.spheres) {
+              for (const sphere of node.spheres) {
+                const hit = intersectObject(ray, sphere);
+                if (hit && hit.t < closest) {
+                  closest = hit.t;
+                  result = hit;
+                }
+              }
+            } else {
+              if (node.left) stack.push(node.left);
+              if (node.right) stack.push(node.right);
+            }
+          }
+        }
+        return result;
+      }
+
+      function randomInUnitSphere() {
+        let point;
+        do {
+          point = new V(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1);
+        } while (point.dot(point) >= 1);
+        return point;
+      }
+
+      function cosineHemisphere(normal) {
+        const r1 = Math.random();
+        const r2 = Math.random();
+        const phi = 2 * Math.PI * r1;
+        const local = new V(
+          Math.sqrt(r2) * Math.cos(phi),
+          Math.sqrt(r2) * Math.sin(phi),
+          Math.sqrt(1 - r2)
+        );
+        const helper = Math.abs(normal.y) < 0.999 ? new V(0, 1, 0) : new V(1, 0, 0);
+        const tangent = helper.cross(normal).normalized();
+        const bitangent = normal.cross(tangent);
+        return tangent.mul(local.x).add(bitangent.mul(local.y)).add(normal.mul(local.z)).normalized();
+      }
+
+      function visibleToLight(point, lightPoint) {
+        const toLight = lightPoint.sub(point);
+        const distanceToLight = toLight.length();
+        const shadowRay = new Ray(point.add(toLight.normalized().mul(EPSILON * 2)), toLight);
+        const blocker = closestHit(shadowRay);
+        return !blocker || blocker.t >= distanceToLight - EPSILON * 4;
+      }
+
+      function directLight(hit) {
+        const light = lightSphere;
+        const lightNormal = randomInUnitSphere().normalized();
+        const lightPoint = light.center.add(lightNormal.mul(light.radius));
+        const toLight = lightPoint.sub(hit.point);
+        const distanceSquared = toLight.dot(toLight);
+        const distanceToLight = Math.sqrt(distanceSquared);
+        const direction = toLight.mul(1 / distanceToLight);
+        const surfaceCosine = Math.max(0, hit.normal.dot(direction));
+        const lightCosine = Math.max(0, lightNormal.dot(direction.negate()));
+        if (surfaceCosine <= 0 || lightCosine <= 0 || !visibleToLight(hit.point, lightPoint)) {
+          return new V();
+        }
+        const area = 4 * Math.PI * light.radius * light.radius;
+        const geometry = surfaceCosine * lightCosine * area / (Math.PI * distanceSquared);
+        return hit.material.color.hadamard(light.material.color).mul(
+          light.material.emission * geometry / Math.PI
+        );
+      }
+
+      function trace(ray) {
+        let radiance = new V();
+        let throughput = new V(1, 1, 1);
+        let emissionAllowed = true;
+
+        for (let depth = 0; depth < renderState.maxDepth; depth += 1) {
+          const hit = closestHit(ray);
+          if (!hit) break;
+          const material = hit.material;
+          if (material.emission > 0) {
+            if (emissionAllowed) {
+              radiance = radiance.add(throughput.hadamard(material.color).mul(material.emission));
+            }
+            break;
+          }
+
+          const normal = ray.direction.dot(hit.normal) < 0 ? hit.normal : hit.normal.negate();
+          if (material.type === "specular") {
+            const reflected = ray.direction.sub(normal.mul(2 * ray.direction.dot(normal))).normalized();
+            throughput = throughput.hadamard(material.color);
+            emissionAllowed = true;
+            ray = new Ray(hit.point.add(normal.mul(EPSILON * 2)), reflected);
+          } else {
+            radiance = radiance.add(throughput.hadamard(directLight({ ...hit, normal })));
+            throughput = throughput.hadamard(material.color);
+            emissionAllowed = false;
+            ray = new Ray(hit.point.add(normal.mul(EPSILON * 2)), cosineHemisphere(normal));
+          }
+
+          if (depth >= 3) {
+            const survival = Math.min(0.95, Math.max(0.15, throughput.x, throughput.y, throughput.z));
+            if (Math.random() > survival) break;
+            throughput = throughput.mul(1 / survival);
+          }
+        }
+        return radiance;
+      }
+
+      function tracePixel(index) {
+        const state = renderState;
+        const x = index % state.width;
+        const y = Math.floor(index / state.width);
+        const screenX = (2 * ((x + Math.random()) / state.width) - 1) *
+          state.aspectRatio * state.fovScale;
+        const screenY = (1 - 2 * ((y + Math.random()) / state.height)) * state.fovScale;
+        const direction = state.forward
+          .add(state.right.mul(screenX))
+          .add(state.up.mul(screenY))
+          .normalized();
+        return trace(new Ray(state.origin, direction));
+      }
+
+      function configure(message) {
+        scene = message.scene.map(item => {
+          const material = {
+            color: vector(item.material.color),
+            type: item.material.type,
+            emission: item.material.emission
+          };
+          if (item.kind === "sphere") {
+            return { ...item, center: vector(item.center), material };
+          }
+          return {
+            ...item,
+            point: vector(item.point),
+            normal: vector(item.normal).normalized(),
+            uAxis: vector(item.uAxis),
+            vAxis: vector(item.vAxis),
+            material
+          };
+        });
+        planes = scene.filter(item => item.kind === "plane");
+        const spheres = scene.filter(item => item.kind === "sphere");
+        sphereBvh = buildSphereBvh(spheres);
+        lightSphere = spheres.find(sphere => sphere.material.emission > 0);
+        if (!lightSphere) throw new Error("Sahnede ışık kaynağı bulunamadı.");
+        renderState = {
+          generation: message.generation,
+          width: message.width,
+          height: message.height,
+          maxDepth: message.maxDepth,
+          aspectRatio: message.aspectRatio,
+          fovScale: message.fovScale,
+          origin: vector(message.camera.origin),
+          forward: vector(message.camera.forward),
+          right: vector(message.camera.right),
+          up: vector(message.camera.up)
+        };
+        self.postMessage({ type: "ready", generation: renderState.generation });
+      }
+
+      self.onmessage = event => {
+        const message = event.data;
+        if (message.type === "configure") {
+          configure(message);
+          return;
+        }
+        if (message.type !== "job" || !renderState ||
+            message.generation !== renderState.generation) return;
+
+        try {
+          const count = message.end - message.start;
+          const colors = new Float32Array(count * 3);
+          for (let i = 0; i < count; i += 1) {
+            const color = tracePixel(message.start + i);
+            colors[i * 3] = color.x;
+            colors[i * 3 + 1] = color.y;
+            colors[i * 3 + 2] = color.z;
+          }
+          self.postMessage({
+            type: "result",
+            generation: message.generation,
+            start: message.start,
+            end: message.end,
+            colors
+          }, [colors.buffer]);
+        } catch (error) {
+          self.postMessage({
+            type: "error",
+            generation: message.generation,
+            message: error.message || String(error)
+          });
+        }
+      };
+    }
+
+    function cameraRay(x, y, jitter = true) {
+      const jitterX = jitter ? Math.random() : 0.5;
+      const jitterY = jitter ? Math.random() : 0.5;
+      const screenX = (2 * ((x + jitterX) / WIDTH) - 1) * aspectRatio * fieldOfViewScale;
+      const screenY = (1 - 2 * ((y + jitterY) / HEIGHT)) * fieldOfViewScale;
+      const direction = cameraForward
+        .add(cameraRight.mul(screenX))
+        .add(cameraUp.mul(screenY))
+        .normalized();
+      return new Ray(cameraOrigin, direction);
+    }
+
+    const FULLSCREEN_VERTEX_SHADER = `#version 300 es
+      void main() {
+        vec2 point = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+        gl_Position = vec4(point * 2.0 - 1.0, 0.0, 1.0);
+      }
+    `;
+
+    const PATH_TRACE_FRAGMENT_SHADER = `#version 300 es
+      precision highp float;
+      precision highp int;
+      out vec4 outColor;
+
+      uniform vec2 u_resolution;
+      uniform vec3 u_cameraOrigin;
+      uniform vec3 u_cameraForward;
+      uniform vec3 u_cameraRight;
+      uniform vec3 u_cameraUp;
+      uniform float u_aspect;
+      uniform float u_fovScale;
+      uniform vec4 u_sphereGeometry[16];
+      uniform vec4 u_sphereSurface[16];
+      uniform vec4 u_sphereEmission[16];
+      uniform int u_sphereCount;
+      uniform int u_lightIndex;
+      uniform sampler2D u_previous;
+      uniform float u_previousSamples;
+      uniform int u_batch;
+      uniform bool u_floatTarget;
+
+      const float EPSILON = 0.0008;
+      const int MAX_DEPTH = 5;
+
+      struct Hit {
+        float distance;
+        vec3 point;
+        vec3 normal;
+        vec3 color;
+        int type;
+        float emission;
+      };
+
+      uint randomState;
+
+      float randomValue() {
+        randomState ^= randomState << 13;
+        randomState ^= randomState >> 17;
+        randomState ^= randomState << 5;
+        return float(randomState) * (1.0 / 4294967296.0);
+      }
+
+      vec3 randomUnitVector() {
+        float z = randomValue() * 2.0 - 1.0;
+        float angle = randomValue() * 6.28318530718;
+        float radius = sqrt(max(0.0, 1.0 - z * z));
+        return vec3(radius * cos(angle), radius * sin(angle), z);
+      }
+
+      void testPlane(
+        vec3 origin, vec3 direction, vec3 point, vec3 normal,
+        vec3 axisU, vec3 axisV, vec4 bounds, vec3 color,
+        inout Hit closest
+      ) {
+        float denominator = dot(direction, normal);
+        if (abs(denominator) < 1e-7) return;
+        float distance = dot(point - origin, normal) / denominator;
+        if (distance <= EPSILON || distance >= closest.distance) return;
+        vec3 position = origin + direction * distance;
+        vec3 offset = position - point;
+        float u = dot(offset, axisU);
+        float v = dot(offset, axisV);
+        if (u < bounds.x || u > bounds.y || v < bounds.z || v > bounds.w) return;
+        closest.distance = distance;
+        closest.point = position;
+        closest.normal = normal;
+        closest.color = color;
+        closest.type = 0;
+        closest.emission = 0.0;
+      }
+
+      Hit intersectScene(vec3 origin, vec3 direction) {
+        Hit closest;
+        closest.distance = 1e30;
+        closest.point = vec3(0.0);
+        closest.normal = vec3(0.0, 1.0, 0.0);
+        closest.color = vec3(0.0);
+        closest.type = 0;
+        closest.emission = 0.0;
+
+        testPlane(origin, direction, vec3(0, 0, 0), vec3(0, 1, 0),
+          vec3(1, 0, 0), vec3(0, 0, 1), vec4(0, 5, 0, 6), vec3(0.73, 0.73, 0.70), closest);
+        testPlane(origin, direction, vec3(0, 5, 0), vec3(0, -1, 0),
+          vec3(1, 0, 0), vec3(0, 0, 1), vec4(0, 5, 0, 6), vec3(0.73, 0.73, 0.70), closest);
+        testPlane(origin, direction, vec3(0, 0, 6), vec3(0, 0, -1),
+          vec3(1, 0, 0), vec3(0, 1, 0), vec4(0, 5, 0, 5), vec3(0.73, 0.73, 0.70), closest);
+        testPlane(origin, direction, vec3(0, 0, 0), vec3(1, 0, 0),
+          vec3(0, 0, 1), vec3(0, 1, 0), vec4(0, 6, 0, 5), vec3(0.72, 0.12, 0.10), closest);
+        testPlane(origin, direction, vec3(5, 0, 0), vec3(-1, 0, 0),
+          vec3(0, 0, 1), vec3(0, 1, 0), vec4(0, 6, 0, 5), vec3(0.12, 0.24, 0.72), closest);
+
+        for (int i = 0; i < 16; i++) {
+          if (i >= u_sphereCount) break;
+          vec3 center = u_sphereGeometry[i].xyz;
+          float radius = u_sphereGeometry[i].w;
+          vec3 offset = origin - center;
+          float halfB = dot(offset, direction);
+          float discriminant = halfB * halfB - dot(offset, offset) + radius * radius;
+          if (discriminant < 0.0) continue;
+          float root = sqrt(discriminant);
+          float distance = -halfB - root;
+          if (distance <= EPSILON) distance = -halfB + root;
+          if (distance <= EPSILON || distance >= closest.distance) continue;
+          closest.distance = distance;
+          closest.point = origin + direction * distance;
+          closest.normal = normalize(closest.point - center);
+          closest.color = u_sphereSurface[i].rgb;
+          closest.type = int(u_sphereSurface[i].a + 0.5);
+          closest.emission = u_sphereEmission[i].x;
+        }
+        return closest;
+      }
+
+      vec3 cosineDirection(vec3 normal) {
+        float r1 = randomValue();
+        float r2 = randomValue();
+        float angle = 6.28318530718 * r1;
+        vec3 helper = abs(normal.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+        vec3 tangent = normalize(cross(helper, normal));
+        vec3 bitangent = cross(normal, tangent);
+        return normalize(
+          tangent * (sqrt(r2) * cos(angle)) +
+          bitangent * (sqrt(r2) * sin(angle)) +
+          normal * sqrt(1.0 - r2)
+        );
+      }
+
+      bool visibleToLight(vec3 point, vec3 lightPoint) {
+        vec3 toLight = lightPoint - point;
+        float distanceToLight = length(toLight);
+        Hit blocker = intersectScene(point + normalize(toLight) * (EPSILON * 2.0), normalize(toLight));
+        return blocker.distance >= distanceToLight - EPSILON * 4.0;
+      }
+
+      vec3 directLight(Hit hit) {
+        vec3 lightCenter = u_sphereGeometry[u_lightIndex].xyz;
+        float lightRadius = u_sphereGeometry[u_lightIndex].w;
+        vec3 lightNormal = randomUnitVector();
+        vec3 lightPoint = lightCenter + lightNormal * lightRadius;
+        vec3 toLight = lightPoint - hit.point;
+        float distanceSquared = dot(toLight, toLight);
+        float distanceToLight = sqrt(distanceSquared);
+        vec3 direction = toLight / distanceToLight;
+        float surfaceCosine = max(0.0, dot(hit.normal, direction));
+        float lightCosine = max(0.0, dot(lightNormal, -direction));
+        if (surfaceCosine <= 0.0 || lightCosine <= 0.0 || !visibleToLight(hit.point, lightPoint)) {
+          return vec3(0.0);
+        }
+        float area = 12.5663706144 * lightRadius * lightRadius;
+        float geometry = surfaceCosine * lightCosine * area / (3.14159265359 * distanceSquared);
+        return hit.color * u_sphereSurface[u_lightIndex].rgb *
+          (u_sphereEmission[u_lightIndex].x * geometry / 3.14159265359);
+      }
+
+      vec3 tracePath(vec3 origin, vec3 direction) {
+        vec3 radiance = vec3(0.0);
+        vec3 throughput = vec3(1.0);
+        bool emissionAllowed = true;
+        for (int depth = 0; depth < MAX_DEPTH; depth++) {
+          Hit hit = intersectScene(origin, direction);
+          if (hit.distance >= 1e29) break;
+          if (hit.emission > 0.0) {
+            if (emissionAllowed) radiance += throughput * hit.color * hit.emission;
+            break;
+          }
+          vec3 normal = dot(direction, hit.normal) < 0.0 ? hit.normal : -hit.normal;
+          if (hit.type == 1) {
+            direction = normalize(direction - 2.0 * dot(direction, normal) * normal);
+            throughput *= hit.color;
+            emissionAllowed = true;
+          } else {
+            radiance += throughput * directLight(Hit(
+              hit.distance, hit.point, normal, hit.color, hit.type, hit.emission
+            ));
+            throughput *= hit.color;
+            direction = cosineDirection(normal);
+            emissionAllowed = false;
+          }
+          origin = hit.point + normal * (EPSILON * 2.0);
+          if (depth >= 3) {
+            float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.15, 0.95);
+            if (randomValue() > survival) break;
+            throughput /= survival;
+          }
+        }
+        return radiance;
+      }
+
+      vec3 displayColor(vec3 color) {
+        vec3 mapped = color / (vec3(1.0) + color);
+        return pow(max(mapped, vec3(0.0)), vec3(1.0 / 2.2));
+      }
+
+      void main() {
+        ivec2 pixel = ivec2(gl_FragCoord.xy);
+        randomState = uint(pixel.x + 1) * 1973u +
+          uint(pixel.y + 1) * 9277u +
+          uint(u_previousSamples + 1.0) * 26699u;
+        randomState ^= randomState << 13;
+        randomState ^= randomState >> 17;
+        randomState ^= randomState << 5;
+
+        vec3 sampleSum = vec3(0.0);
+        for (int sampleIndex = 0; sampleIndex < 4; sampleIndex++) {
+          if (sampleIndex >= u_batch) break;
+          vec2 jitter = vec2(randomValue(), randomValue());
+          vec2 screen = ((gl_FragCoord.xy + jitter) / u_resolution) * 2.0 - 1.0;
+          screen.x *= u_aspect;
+          vec3 direction = normalize(
+            u_cameraForward +
+            u_cameraRight * (screen.x * u_fovScale) +
+            u_cameraUp * (screen.y * u_fovScale)
+          );
+          vec3 radiance = tracePath(u_cameraOrigin, direction);
+          sampleSum += u_floatTarget ? radiance : displayColor(radiance);
+        }
+
+        vec3 previous = texelFetch(u_previous, pixel, 0).rgb;
+        float totalSamples = u_previousSamples + float(u_batch);
+        outColor = vec4(
+          (previous * u_previousSamples + sampleSum) / max(totalSamples, 1.0),
+          1.0
+        );
+      }
+    `;
+
+    const DISPLAY_FRAGMENT_SHADER = `#version 300 es
+      precision highp float;
+      out vec4 outColor;
+      uniform sampler2D u_accumulation;
+      uniform bool u_floatTarget;
+      void main() {
+        vec2 uv = gl_FragCoord.xy / vec2(textureSize(u_accumulation, 0));
+        vec3 color = texture(u_accumulation, uv).rgb;
+        if (u_floatTarget) {
+          color = color / (vec3(1.0) + color);
+          color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
+        }
+        outColor = vec4(color, 1.0);
+      }
+    `;
+
+    function compileShader(type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        const message = gl.getShaderInfoLog(shader);
+        gl.deleteShader(shader);
+        throw new Error(message || "GLSL shader derlenemedi.");
+      }
+      return shader;
+    }
+
+    function createProgram(fragmentSource) {
+      const program = gl.createProgram();
+      gl.attachShader(program, compileShader(gl.VERTEX_SHADER, FULLSCREEN_VERTEX_SHADER));
+      gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fragmentSource));
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        const message = gl.getProgramInfoLog(program);
+        gl.deleteProgram(program);
+        throw new Error(message || "WebGL programı bağlanamadı.");
+      }
+      return program;
+    }
+
+    function createGpuTarget() {
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gpuFloatTargets ? gl.RGBA16F : gl.RGBA8,
+        WIDTH, HEIGHT, 0, gl.RGBA,
+        gpuFloatTargets ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null
+      );
+
+      const framebuffer = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error("WebGL birikim tamponu oluşturulamadı.");
+      }
+      return { texture, framebuffer };
+    }
+
+    function resizeGpuTargets() {
+      for (const target of gpuTargets) {
+        gl.deleteFramebuffer(target.framebuffer);
+        gl.deleteTexture(target.texture);
+      }
+      gpuTargets = [createGpuTarget(), createGpuTarget()];
+      gpuReadIndex = 0;
+      clearGpuTargets();
+    }
+
+    function clearGpuTargets() {
+      for (const target of gpuTargets) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+        gl.viewport(0, 0, WIDTH, HEIGHT);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    function initializeWebGL() {
+      try {
+        gpuFloatTargets = Boolean(gl.getExtension("EXT_color_buffer_float"));
+        gpuProgram = createProgram(PATH_TRACE_FRAGMENT_SHADER);
+        displayProgram = createProgram(DISPLAY_FRAGMENT_SHADER);
+        gpuUniforms = {
+          previous: gl.getUniformLocation(gpuProgram, "u_previous"),
+          resolution: gl.getUniformLocation(gpuProgram, "u_resolution"),
+          cameraOrigin: gl.getUniformLocation(gpuProgram, "u_cameraOrigin"),
+          cameraForward: gl.getUniformLocation(gpuProgram, "u_cameraForward"),
+          cameraRight: gl.getUniformLocation(gpuProgram, "u_cameraRight"),
+          cameraUp: gl.getUniformLocation(gpuProgram, "u_cameraUp"),
+          aspect: gl.getUniformLocation(gpuProgram, "u_aspect"),
+          fovScale: gl.getUniformLocation(gpuProgram, "u_fovScale"),
+          previousSamples: gl.getUniformLocation(gpuProgram, "u_previousSamples"),
+          batch: gl.getUniformLocation(gpuProgram, "u_batch"),
+          floatTarget: gl.getUniformLocation(gpuProgram, "u_floatTarget"),
+          sphereGeometry: gl.getUniformLocation(gpuProgram, "u_sphereGeometry[0]"),
+          sphereSurface: gl.getUniformLocation(gpuProgram, "u_sphereSurface[0]"),
+          sphereEmission: gl.getUniformLocation(gpuProgram, "u_sphereEmission[0]"),
+          sphereCount: gl.getUniformLocation(gpuProgram, "u_sphereCount"),
+          lightIndex: gl.getUniformLocation(gpuProgram, "u_lightIndex"),
+          accumulation: gl.getUniformLocation(displayProgram, "u_accumulation"),
+          displayFloatTarget: gl.getUniformLocation(displayProgram, "u_floatTarget")
+        };
+        gpuVao = gl.createVertexArray();
+        gl.bindVertexArray(gpuVao);
+        gl.disable(gl.DEPTH_TEST);
+        gl.disable(gl.BLEND);
+        resizeGpuTargets();
+        workerCountLabel.textContent = "WebGL 2";
+        renderStatusLabel.textContent = "GPU render ediliyor";
+        return true;
+      } catch (error) {
+        renderStatusLabel.textContent = `WebGL başlatılamadı: ${error.message}`;
+        workerCountLabel.textContent = "WebGL hata";
+        return false;
+      }
+    }
+
+    function setUniformVector(name, value) {
+      gl.uniform3f(gpuUniforms[name], value.x, value.y, value.z);
+    }
+
+    function updateGpuSceneUniforms() {
+      if (!gpuSceneDirty) return;
+      if (gpuSpheres.length > MAX_GPU_SPHERES) {
+        throw new RangeError(`GPU sahnesi en fazla ${MAX_GPU_SPHERES} küre destekliyor.`);
+      }
+      gpuSpheres.forEach((sphere, index) => {
+        const offset = index * 4;
+        gpuSphereGeometry[offset] = sphere.center.x;
+        gpuSphereGeometry[offset + 1] = sphere.center.y;
+        gpuSphereGeometry[offset + 2] = sphere.center.z;
+        gpuSphereGeometry[offset + 3] = sphere.radius;
+        const type = sphere.material.type === "specular" ? 1 :
+          sphere.material.type === "emissive" ? 2 : 0;
+        gpuSphereSurface[offset] = sphere.material.color.x;
+        gpuSphereSurface[offset + 1] = sphere.material.color.y;
+        gpuSphereSurface[offset + 2] = sphere.material.color.z;
+        gpuSphereSurface[offset + 3] = type;
+        gpuSphereEmission[offset] = sphere.material.emission;
+      });
+      gl.uniform4fv(gpuUniforms.sphereGeometry, gpuSphereGeometry);
+      gl.uniform4fv(gpuUniforms.sphereSurface, gpuSphereSurface);
+      gl.uniform4fv(gpuUniforms.sphereEmission, gpuSphereEmission);
+      gl.uniform1i(gpuUniforms.sphereCount, gpuSpheres.length);
+      gl.uniform1i(gpuUniforms.lightIndex, gpuSpheres.indexOf(light));
+      gpuSceneDirty = false;
+    }
+
+    function renderGpuFrame() {
+      if (gl.isContextLost()) return;
+      const writeIndex = 1 - gpuReadIndex;
+      const previous = gpuTargets[gpuReadIndex];
+      const output = gpuTargets[writeIndex];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, output.framebuffer);
+      gl.viewport(0, 0, WIDTH, HEIGHT);
+      gl.useProgram(gpuProgram);
+      gl.bindVertexArray(gpuVao);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, previous.texture);
+      gl.uniform1i(gpuUniforms.previous, 0);
+      gl.uniform2f(gpuUniforms.resolution, WIDTH, HEIGHT);
+      setUniformVector("cameraOrigin", cameraOrigin);
+      setUniformVector("cameraForward", cameraForward);
+      setUniformVector("cameraRight", cameraRight);
+      setUniformVector("cameraUp", cameraUp);
+      gl.uniform1f(gpuUniforms.aspect, aspectRatio);
+      gl.uniform1f(gpuUniforms.fovScale, fieldOfViewScale);
+      gl.uniform1f(gpuUniforms.previousSamples, completedSamples);
+      gl.uniform1i(gpuUniforms.batch, Number(qualityInput.value));
+      gl.uniform1i(gpuUniforms.floatTarget, gpuFloatTargets ? 1 : 0);
+      updateGpuSceneUniforms();
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (gl.isContextLost()) {
+        activateWorkerFallback("GPU bağlamı kayboldu");
+        return;
+      }
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, WIDTH, HEIGHT);
+      gl.useProgram(displayProgram);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, output.texture);
+      gl.uniform1i(gpuUniforms.accumulation, 0);
+      gl.uniform1i(gpuUniforms.displayFloatTarget, gpuFloatTargets ? 1 : 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gpuReadIndex = writeIndex;
+      completedSamples += Number(qualityInput.value);
+      sampleLabel.textContent = String(completedSamples);
+      renderStatusLabel.textContent = "WebGL 2 GPU render ediliyor";
+    }
+
+    function linearToSRGB(value) {
+      const mapped = value / (1 + value);
+      return Math.pow(Math.max(0, mapped), 1 / 2.2);
+    }
+
+    function updateCamera(deltaSeconds) {
+      let forwardAmount = 0;
+      let rightAmount = 0;
+      if (pressedKeys.has("KeyW")) forwardAmount += 1;
+      if (pressedKeys.has("KeyS")) forwardAmount -= 1;
+      if (pressedKeys.has("KeyD")) rightAmount += 1;
+      if (pressedKeys.has("KeyA")) rightAmount -= 1;
+      if (forwardAmount === 0 && rightAmount === 0) return false;
+
+      const horizontalForward = new Vec3(cameraForward.x, 0, cameraForward.z).normalized();
+      const direction = horizontalForward.mul(forwardAmount).add(cameraRight.mul(rightAmount)).normalized();
+      const distance = CAMERA_SPEED * deltaSeconds;
+      const next = cameraOrigin.add(direction.mul(distance));
+      const bounded = new Vec3(
+        Math.max(-2, Math.min(7, next.x)),
+        Math.max(0.2, Math.min(4.8, next.y)),
+        Math.max(-10, Math.min(5.7, next.z))
+      );
+      if (bounded.sub(cameraOrigin).length() < 1e-8) return false;
+
+      cameraOrigin = bounded;
+      resetAccumulation();
+      return true;
+    }
+
+    function plainVector(value) {
+      return { x: value.x, y: value.y, z: value.z };
+    }
+
+    function serializeScene() {
+      return objects.map(object => {
+        const material = {
+          color: plainVector(object.material.color),
+          type: object.material.type,
+          emission: object.material.emission
+        };
+        if (object instanceof Sphere) {
+          return {
+            kind: "sphere",
+            center: plainVector(object.center),
+            radius: object.radius,
+            material
+          };
+        }
+        return {
+          kind: "plane",
+          point: plainVector(object.point),
+          normal: plainVector(object.normal),
+          uAxis: plainVector(object.uAxis),
+          vAxis: plainVector(object.vAxis),
+          minU: object.minU,
+          maxU: object.maxU,
+          minV: object.minV,
+          maxV: object.maxV,
+          material
+        };
+      });
+    }
+
+    function configureWorkers() {
+      if (workers.length === 0 || rendererMode !== "workers") return;
+      renderGeneration += 1;
+      readyWorkers = 0;
+      nextJobStart = 0;
+      jobsRemaining = 0;
+      const state = {
+        type: "configure",
+        generation: renderGeneration,
+        width: WIDTH,
+        height: HEIGHT,
+        maxDepth: MAX_DEPTH,
+        aspectRatio,
+        fovScale: fieldOfViewScale,
+        camera: {
+          origin: plainVector(cameraOrigin),
+          forward: plainVector(cameraForward),
+          right: plainVector(cameraRight),
+          up: plainVector(cameraUp)
+        },
+        scene: serializeScene()
+      };
+      renderStatusLabel.textContent = "Sahne hazırlanıyor";
+      for (const worker of workers) worker.postMessage(state);
+    }
+
+    function scheduleWorkerConfiguration() {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(configureWorkers, 100);
+    }
+
+    function dispatchNextJob(worker) {
+      if (paused || nextJobStart >= SAMPLES_PER_PIXEL) return;
+      const start = nextJobStart;
+      const end = Math.min(start + activeChunkSize, SAMPLES_PER_PIXEL);
+      nextJobStart = end;
+      worker.postMessage({
+        type: "job",
+        generation: renderGeneration,
+        start,
+        end
+      });
+    }
+
+    function beginSamplePass() {
+      if (paused || readyWorkers !== workers.length) return;
+      nextJobStart = 0;
+      activeChunkSize = Number(qualityInput.value) * 4096;
+      jobsRemaining = Math.ceil(SAMPLES_PER_PIXEL / activeChunkSize);
+      renderStatusLabel.textContent = "Render ediliyor";
+      for (const worker of workers) dispatchNextJob(worker);
+    }
+
+    function handleWorkerMessage(worker, event) {
+      const message = event.data;
+      if (message.generation !== renderGeneration) return;
+
+      if (message.type === "ready") {
+        readyWorkers += 1;
+        if (readyWorkers === workers.length) {
+          renderStatusLabel.textContent = paused ? "Duraklatıldı" : "Render ediliyor";
+          beginSamplePass();
+        }
+        return;
+      }
+
+      if (message.type === "error") {
+        paused = true;
+        pauseButton.textContent = "Devam et";
+        renderStatusLabel.textContent = `Worker hatası: ${message.message}`;
+        return;
+      }
+
+      if (message.type !== "result") return;
+      const { start, end, colors } = message;
+      let dirtyTop = HEIGHT;
+      let dirtyBottom = 0;
+
+      for (let pixel = start; pixel < end; pixel += 1) {
+        const colorIndex = (pixel - start) * 3;
+        const bufferIndex = pixel * 3;
+        accumulated[bufferIndex] += colors[colorIndex];
+        accumulated[bufferIndex + 1] += colors[colorIndex + 1];
+        accumulated[bufferIndex + 2] += colors[colorIndex + 2];
+        const count = ++pixelSamples[pixel];
+        const imageIndex = pixel * 4;
+        image.data[imageIndex] = Math.round(255 * linearToSRGB(accumulated[bufferIndex] / count));
+        image.data[imageIndex + 1] = Math.round(255 * linearToSRGB(accumulated[bufferIndex + 1] / count));
+        image.data[imageIndex + 2] = Math.round(255 * linearToSRGB(accumulated[bufferIndex + 2] / count));
+        image.data[imageIndex + 3] = 255;
+        const row = Math.floor(pixel / WIDTH);
+        dirtyTop = Math.min(dirtyTop, row);
+        dirtyBottom = Math.max(dirtyBottom, row);
+      }
+
+      context.putImageData(image, 0, 0, 0, dirtyTop, WIDTH, dirtyBottom - dirtyTop + 1);
+      jobsRemaining -= 1;
+      if (jobsRemaining === 0) {
+        completedSamples += 1;
+        sampleLabel.textContent = String(completedSamples);
+        beginSamplePass();
+      } else {
+        dispatchNextJob(worker);
+      }
+    }
+
+    function initializeWorkers() {
+      if (workers.length > 0) {
+        configureWorkers();
+        return;
+      }
+      const hardwareThreads = navigator.hardwareConcurrency || 4;
+      const workerCount = Math.max(1, Math.min(6, hardwareThreads - 1));
+      const source = `(${createPathWorkerRuntime.toString()})();`;
+      const blobUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+
+      try {
+        for (let index = 0; index < workerCount; index += 1) {
+          const worker = new Worker(blobUrl);
+          worker.onmessage = event => handleWorkerMessage(worker, event);
+          worker.onerror = event => {
+            paused = true;
+            pauseButton.textContent = "Devam et";
+            renderStatusLabel.textContent = `Worker başlatılamadı: ${event.message || "bilinmeyen hata"}`;
+          };
+          workers.push(worker);
+        }
+        workerCountLabel.textContent = `CPU · ${workers.length}`;
+        configureWorkers();
+      } catch (error) {
+        for (const worker of workers) worker.terminate();
+        workers = [];
+        workerCountLabel.textContent = "Hata";
+        renderStatusLabel.textContent = `Worker oluşturulamadı: ${error.message}`;
+      } finally {
+        URL.revokeObjectURL(blobUrl);
+      }
+    }
+
+    function showRenderer(mode) {
+      rendererMode = mode;
+      const useGpu = mode === "webgl";
+      gpuCanvas.hidden = !useGpu;
+      fallbackCanvas.hidden = useGpu;
+      canvas = useGpu ? gpuCanvas : fallbackCanvas;
+      if (useGpu) {
+        fallbackCanvas.width = 1;
+        fallbackCanvas.height = 1;
+      }
+    }
+
+    function activateWorkerFallback(reason) {
+      if (rendererMode === "workers" && workers.length > 0) return;
+      showRenderer("workers");
+      try {
+        fallbackCanvas.width = WIDTH;
+        fallbackCanvas.height = HEIGHT;
+        allocateFallbackBuffers();
+      } catch (error) {
+        paused = true;
+        pauseButton.textContent = "Devam et";
+        workerCountLabel.textContent = "CPU bellek hatası";
+        renderStatusLabel.textContent = `Yedek motor belleği ayrılamadı: ${error.message}`;
+        return;
+      }
+      completedSamples = 0;
+      sampleLabel.textContent = "0";
+      context.putImageData(image, 0, 0);
+      workerCountLabel.textContent = "CPU Worker";
+      renderStatusLabel.textContent = `CPU yedek motoru: ${reason}`;
+      initializeWorkers();
+    }
+
+    gpuCanvas.addEventListener("webglcontextlost", event => {
+      event.preventDefault();
+      gpuProgram = null;
+      displayProgram = null;
+      gpuTargets = [];
+      gpuUniforms = null;
+      activateWorkerFallback("GPU bağlamı kayboldu");
+    });
+
+    gpuCanvas.addEventListener("webglcontextrestored", () => {
+      for (const worker of workers) worker.terminate();
+      workers = [];
+      showRenderer("webgl");
+      image = null;
+      accumulated = null;
+      pixelSamples = null;
+      gpuSceneDirty = true;
+      if (initializeWebGL()) {
+        workerCountLabel.textContent = "WebGL 2";
+        resetAccumulation();
+      } else {
+        activateWorkerFallback("GPU yeniden başlatılamadı");
+      }
+    });
+
+    function renderFrame(timestamp) {
+      const deltaSeconds = previousFrameTime
+        ? Math.min((timestamp - previousFrameTime) / 1000, 0.05)
+        : 0;
+      previousFrameTime = timestamp;
+      updateCamera(deltaSeconds);
+      if (rendererMode === "webgl" && !paused && gpuProgram) {
+        try {
+          renderGpuFrame();
+        } catch (error) {
+          activateWorkerFallback(`GPU render hatası: ${error.message}`);
+        }
+      }
+      requestAnimationFrame(renderFrame);
+    }
+
+    function resetAccumulation() {
+      renderGeneration += 1;
+      window.clearTimeout(refreshTimer);
+      completedSamples = 0;
+      readyWorkers = 0;
+      sampleLabel.textContent = "0";
+      if (rendererMode === "webgl" && gpuTargets.length) {
+        clearGpuTargets();
+        renderStatusLabel.textContent = paused ? "Duraklatıldı" : "WebGL 2 GPU render ediliyor";
+      } else {
+        if (!image || !accumulated || !pixelSamples) allocateFallbackBuffers();
+        accumulated.fill(0);
+        pixelSamples.fill(0);
+        image.data.fill(0);
+        for (let i = 3; i < image.data.length; i += 4) image.data[i] = 255;
+        renderStatusLabel.textContent = "Sahne hazırlanıyor";
+        context.putImageData(image, 0, 0);
+        scheduleWorkerConfiguration();
+      }
+    }
+
+    function changeResolution(value) {
+      const [width, height] = value.split("x").map(Number);
+      if (!Number.isInteger(width) || !Number.isInteger(height) ||
+          width < 1 || height < 1 || width * height > 4000000) {
+        throw new RangeError("Desteklenmeyen render çözünürlüğü.");
+      }
+
+      const wasUsingFallback = rendererMode === "workers";
+      WIDTH = width;
+      HEIGHT = height;
+      SAMPLES_PER_PIXEL = width * height;
+      aspectRatio = width / height;
+      gpuCanvas.width = width;
+      gpuCanvas.height = height;
+      if (wasUsingFallback) {
+        fallbackCanvas.width = width;
+        fallbackCanvas.height = height;
+        allocateFallbackBuffers();
+      }
+      if (rendererMode === "webgl" && gpuProgram) {
+        const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+        if (width > maxTextureSize || height > maxTextureSize) {
+          activateWorkerFallback(`GPU sınırı ${maxTextureSize}px; çözünürlük CPU’da işleniyor`);
+        } else {
+          resizeGpuTargets();
+        }
+      }
+      resolutionLabel.textContent = `${width} × ${height}`;
+      resetAccumulation();
+    }
+
+    function pointerRay(event) {
+      const bounds = canvas.getBoundingClientRect();
+      const x = (event.clientX - bounds.left) * WIDTH / bounds.width;
+      const y = (event.clientY - bounds.top) * HEIGHT / bounds.height;
+      return { x, y, ray: cameraRay(x, y, false) };
+    }
+
+    function intersectDragPlane(ray, point) {
+      const denominator = ray.direction.dot(cameraForward);
+      if (Math.abs(denominator) < 1e-8) return null;
+      const t = point.sub(ray.origin).dot(cameraForward) / denominator;
+      return t > EPSILON ? ray.at(t) : null;
+    }
+
+    function setSelectedObject(object) {
+      selectedObject = object;
+      interactionStatus.textContent = `Seçili nesne: ${object ? object.name : "yok"}`;
+    }
+
+    function moveSelectedObject(event) {
+      const { ray } = pointerRay(event);
+      const planePoint = pointerAction.planePoint;
+      const pointOnPlane = intersectDragPlane(ray, planePoint);
+      if (!pointOnPlane) return;
+
+      const sphere = pointerAction.object;
+      const desiredCenter = pointOnPlane.add(pointerAction.dragOffset);
+      const radius = sphere.radius;
+      const candidate = new Vec3(
+        Math.max(radius + 0.02, Math.min(5 - radius - 0.02, desiredCenter.x)),
+        Math.max(radius + 0.02, Math.min(5 - radius - 0.02, desiredCenter.y)),
+        Math.max(radius + 0.02, Math.min(6 - radius - 0.02, desiredCenter.z))
+      );
+
+      const overlaps = objects.some(other =>
+        other instanceof Sphere &&
+        other !== sphere &&
+        candidate.sub(other.center).length() < radius + other.radius + 0.03
+      );
+      if (overlaps || candidate.sub(sphere.center).length() < 1e-5) return;
+
+      sphere.center = candidate;
+      gpuSceneDirty = true;
+      resetAccumulation();
+    }
+
+    function handlePointerDown(event) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const { x, y, ray } = pointerRay(event);
+      const hit = intersectScene(ray);
+
+      if (hit && hit.object instanceof Sphere) {
+        setSelectedObject(hit.object);
+        const planePoint = hit.object.center;
+        const pointOnPlane = intersectDragPlane(ray, planePoint);
+        pointerAction = {
+          type: "move-object",
+          pointerId: event.pointerId,
+          object: hit.object,
+          planePoint,
+          dragOffset: pointOnPlane ? hit.object.center.sub(pointOnPlane) : new Vec3()
+        };
+      } else {
+        pointerAction = {
+          type: "look",
+          pointerId: event.pointerId,
+          lastX: x,
+          lastY: y
+        };
+      }
+
+      canvas.setPointerCapture(event.pointerId);
+    }
+
+    function handlePointerMove(event) {
+      if (!pointerAction || pointerAction.pointerId !== event.pointerId) return;
+      const { x, y } = pointerRay(event);
+
+      if (pointerAction.type === "look") {
+        const deltaX = x - pointerAction.lastX;
+        const deltaY = y - pointerAction.lastY;
+        pointerAction.lastX = x;
+        pointerAction.lastY = y;
+        if (deltaX === 0 && deltaY === 0) return;
+
+        cameraYaw -= deltaX * LOOK_SENSITIVITY;
+        cameraPitch = Math.max(
+          -Math.PI / 2 + 0.03,
+          Math.min(Math.PI / 2 - 0.03, cameraPitch + deltaY * LOOK_SENSITIVITY)
+        );
+        updateCameraBasis();
+        resetAccumulation();
+      } else {
+        moveSelectedObject(event);
+      }
+    }
+
+    function endPointerAction(event) {
+      if (pointerAction && pointerAction.pointerId === event.pointerId) pointerAction = null;
+    }
+
+    for (const surface of [gpuCanvas, fallbackCanvas]) {
+      surface.addEventListener("pointerdown", handlePointerDown);
+      surface.addEventListener("pointermove", handlePointerMove);
+      surface.addEventListener("pointerup", endPointerAction);
+      surface.addEventListener("pointercancel", endPointerAction);
+      surface.addEventListener("lostpointercapture", endPointerAction);
+    }
+
+    pauseButton.addEventListener("click", () => {
+      paused = !paused;
+      pauseButton.textContent = paused ? "Devam et" : "Duraklat";
+      if (paused) {
+        renderStatusLabel.textContent = "Duraklatıldı";
+      } else if (rendererMode === "workers") {
+        configureWorkers();
+      }
+    });
+
+    document.getElementById("reset").addEventListener("click", resetAccumulation);
+
+    resolutionSelect.addEventListener("change", () => {
+      try {
+        changeResolution(resolutionSelect.value);
+      } catch (error) {
+        renderStatusLabel.textContent = `Çözünürlük değiştirilemedi: ${error.message}`;
+        resolutionSelect.value = `${WIDTH}x${HEIGHT}`;
+      }
+    });
+
+    window.addEventListener("keydown", event => {
+      if (!["KeyW", "KeyA", "KeyS", "KeyD"].includes(event.code)) return;
+      event.preventDefault();
+      pressedKeys.add(event.code);
+    });
+
+    window.addEventListener("keyup", event => {
+      pressedKeys.delete(event.code);
+    });
+
+    window.addEventListener("blur", () => {
+      pressedKeys.clear();
+    });
+
+    qualityInput.addEventListener("input", () => {
+      qualityLabel.textContent = qualityInput.value;
+    });
+
+    window.addEventListener("pagehide", () => {
+      for (const worker of workers) worker.terminate();
+    }, { once: true });
+
+    if (gl && initializeWebGL()) {
+      showRenderer("webgl");
+    } else {
+      activateWorkerFallback(gl ? "WebGL 2 başlatılamadı" : "WebGL 2 desteklenmiyor");
+    }
+    requestAnimationFrame(renderFrame);
+  </script>
+</body>
+</html>
